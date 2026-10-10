@@ -21,6 +21,11 @@
   .toolbar .hint{color:var(--faint);font-size:12px;margin-right:auto}
   .toolbar .warn{color:#c0392b;font-size:12px;font-weight:500;margin-right:8px}
   .toolbar .warn:empty{display:none}
+  .toolbar .warn.ok{color:#2e7d32}
+  .ownerbox{display:none;margin-right:8px}
+  .ownerbox.show{display:inline-flex}
+  #ownerin{font:inherit;font-size:12px;width:132px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;outline:none;background:#fff}
+  #ownerin:focus{border-color:var(--orange);box-shadow:0 0 0 3px rgba(245,139,39,.14)}
   .toolbar .hint b{color:var(--muted);font-weight:500}
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#fff}
   .seg button{font:inherit;font-weight:600;font-size:12.5px;border:0;background:#fff;color:var(--muted);padding:8px 13px;cursor:pointer}
@@ -42,6 +47,9 @@
   #trn{font-variant-numeric:tabular-nums}
   #trn:empty::before{content:attr(data-ph);color:var(--faint);font-style:italic}
   body:not(.exporting) #trn.bad{color:#c0392b;box-shadow:inset 0 -2px 0 rgba(192,57,43,.45);border-radius:3px}
+  body:not(.exporting) .trnwrap.needtrn{display:inline-block;border:1.5px solid #c0392b;background:rgba(192,57,43,.06);
+    border-radius:6px;padding:0 6px;margin-left:-6px;animation:trnpulse 1.1s ease}
+  @keyframes trnpulse{0%{box-shadow:0 0 0 0 rgba(192,57,43,.4)}100%{box-shadow:0 0 0 8px rgba(192,57,43,0)}}
   .doc{text-align:right;flex:0 0 auto}
   .doc .k{font-weight:600;font-size:14px;letter-spacing:.04em;color:var(--ink)}
   .meta{margin-top:16px;font-size:11px;color:var(--muted);line-height:2.0}
@@ -191,6 +199,7 @@
 <div class="toolbar">
   <span class="hint"><b>Tip:</b> click any text to edit · tick the lines to include · switch currency · then Download PDF</span>
   <span class="warn" id="warn" role="alert"></span>
+  <form class="ownerbox" id="ownerbox"><input id="ownerin" type="password" autocomplete="off" spellcheck="false" placeholder="owner code" aria-label="owner code"></form>
   <div class="seg" id="cur"></div>
   <button class="btn" id="reset" type="button">Reset</button>
   <button class="btn primary" id="preview" type="button">Preview PDF</button>
@@ -241,6 +250,8 @@
 <script>
   function startApp(){
   const Q = window.QUOTE;
+  const OWNER_CODE = (Q.ownerBypassCode || '').trim();   // hidden owner override (from encrypted config)
+  let trnBypass = false;                                 // when on, the PDF renders without a valid TRN
   let currency = Q.baseCurrency || 'USD';
   const fmt = (n)=> Math.round(n).toLocaleString('en-US');
   const num = (s)=> parseFloat(String(s).replace(/[^0-9.]/g,'')) || 0;
@@ -340,8 +351,16 @@
     const d=trnDigits(el), ok=d.length===15;
     el.classList.toggle('bad', d.length>0 && !ok);
     el.title = ok ? '' : 'UAE TRN must be 15 digits'+(d.length?(' — '+d.length+'/15'):'');
-    const warn=document.getElementById('warn'); if(ok && warn) warn.textContent='';   // clear the gate message once valid
+    if(ok){
+      const warn=document.getElementById('warn'); if(warn && !trnBypass){ warn.textContent=''; warn.classList.remove('ok'); }
+      const w=document.querySelector('.trnwrap'); if(w) w.classList.remove('needtrn');   // clear the error box once valid
+    }
     return ok;
+  }
+  function showOverride(){   // owner override indicator
+    const warn=document.getElementById('warn');
+    if(warn){ warn.textContent = trnBypass ? 'Owner override on — TRN not required.' : ''; warn.classList.toggle('ok', trnBypass); }
+    if(trnBypass){ const w=document.querySelector('.trnwrap'); if(w) w.classList.remove('needtrn'); }
   }
 
   function updateFonts(){
@@ -431,7 +450,32 @@
     document.querySelectorAll('#cur button').forEach(x=> x.classList.toggle('on', x===b));
     renderAmounts(); recalc();
   });
-  document.getElementById('reset').addEventListener('click', ()=>{ if(confirm('Reset to the defaults in invoice.config.js?')) location.reload(); });
+  // hidden owner auth — Ctrl/Cmd+Shift+O reveals a code field; the right code toggles the TRN-bypass
+  const ownerbox=document.getElementById('ownerbox'), ownerin=document.getElementById('ownerin');
+  document.addEventListener('keydown', e=>{
+    if((e.ctrlKey||e.metaKey) && e.shiftKey && (e.key==='O'||e.key==='o')){
+      e.preventDefault();
+      if(!OWNER_CODE) return;
+      ownerbox.classList.toggle('show');
+      if(ownerbox.classList.contains('show')){ ownerin.value=''; ownerin.focus(); }
+    }
+  });
+  ownerbox.addEventListener('submit', e=>{
+    e.preventDefault();
+    if(OWNER_CODE && ownerin.value.trim().toUpperCase()===OWNER_CODE.toUpperCase()){
+      trnBypass=!trnBypass; ownerin.value=''; ownerbox.classList.remove('show'); showOverride();
+    }else{
+      ownerin.value=''; const ph=ownerin.placeholder; ownerin.placeholder='wrong code'; setTimeout(()=>ownerin.placeholder=ph,1200);
+    }
+  });
+
+  document.getElementById('reset').addEventListener('click', ()=>{
+    if(!confirm('Reset all values to the defaults?')) return;
+    trnBypass=false;
+    render();   // rebuild from defaults in memory — no page reload, so the access gate does not reappear
+    const warn=document.getElementById('warn'); if(warn){ warn.textContent=''; warn.classList.remove('ok'); }
+    const w=document.querySelector('.trnwrap'); if(w) w.classList.remove('needtrn');
+  });
 
   // build the one-page A4 PDF (checkboxes + unticked rows + edit affordances stripped)
   async function buildPdf(){
@@ -465,10 +509,11 @@
   function closeModal(){ modal.classList.remove('open'); if(blobUrl){ URL.revokeObjectURL(blobUrl); blobUrl=null; } document.getElementById('pframe').src='about:blank'; }
 
   document.getElementById('preview').addEventListener('click', async ()=>{
-    // the invoice renders only once a valid 15-digit TRN is in place
-    if(!validateTRN()){
-      const trn=document.getElementById('trn');
-      document.getElementById('warn').textContent='Enter a valid 15-digit TRN to render the invoice.';
+    // the invoice renders only once a valid 15-digit TRN is in place (unless the owner override is on)
+    if(!trnBypass && !validateTRN()){
+      const trn=document.getElementById('trn'), w=document.querySelector('.trnwrap'), warn=document.getElementById('warn');
+      warn.textContent='Enter a valid 15-digit TRN to render the invoice.'; warn.classList.remove('ok');
+      if(w) w.classList.add('needtrn');   // box-highlight the TRN section
       if(trn){ trn.scrollIntoView({block:'center',behavior:'smooth'}); trn.focus(); }
       return;
     }
@@ -494,7 +539,7 @@
 
   /* ---- access gate: decrypt the config with the invite code, then boot ---- */
   (function(){
-    var G = {"salt":"Wcps5JAV2LuW5CGnAHrIVQ==","iv":"VQiEawBQAC8Mb0nE","ct":"dIxeOU0jBysWtZMBlAgr8SIs/LbzRFiNDCqW39weDhGpDoDaEYH9pQWlk+pe3ar7gFNAHLhSwR7LulQeT1wgm0r8U2YCZoph5dS5wigN8lsUV7Y103BwV2Yh9MKCGD2NxK3HfpxL8lXziHPYi1Ibbss3KYzLpkxaKR/gHmMZQ45CmjQpAx+jVCK8uD9s/lq1QO6/aZTJyeRZxafrPsn22eab7Sfeq8fluHkKwVw5n9kJGAvSRM80Yo/S8jxgUN0rNr7+Iy1QXDDcVzKbe3sooBwuBtK8UntvCL2SKWXdOwH8B/2yZQfE+YurSsxd4dRr0YITlM0rJRQciE78Of1EjPtJGktRmo1wWVMrjucxaTRXQTJ8sw1+quP+VWP6/tzRq2rUgtnU+vPpyWs+orHDf2MDWPWcBd36Fp7m2LYk7pi7wQ3r0N71W+sLfkBoeRUatV+lKQEHBFOdSCU9pftNF9Uok0sjbTdP7deNGxbV6ZaShd0Y4CGgLaXPasgtrW5C8RbUCIePAQZblW3CdWdqbMQUSjOH+D6LUmpOCRLaCxtBKnu6MXhUaQK9mbxhsn6Z91gQR5efz69S02aTFqUhVe/+g4cRykoqtG7bRmQAEyXwq3pPS6dbiZZnONo2E2y12w2UELenYp4tRCYgBfFfWrHWfd7KHh2op6ri9KmGqxB1Q7OXTYOw2beBb0Ty6+hlhcNfEr20u6mfX1dssab8xkuJbhnboXetLnRSYs5lzDWK8msKbxlN0EBhGdxKzGq8WeqZ5uJIG6a5kQnPMB2ijMxe0IvC72lqLvbUJ0CFtvuOlQ8W7Id2aXOjwEE9yli7WYY+8LIDSRxa1RRXh+bn1Zbf9nW1PpCtMqkJzfisB8LoxQTUnSlLISrmmIaSmYQIT2mbfSjBhzUKDAQtoqR7qvT9nc1yliXQf5OXFWK08OfwwNpuyqdxKQgKT5VXDgytHZkDKOG3VtKVdAM0jSgeiDlwUEIPuCOUxo20cO+/9jMYQaCRHZd71rgsriFeKaRFG65GEyC4yAskObfz+opJSySSOenDjAQrSlbw2vc5RskRP/atpHDM5ryjYoVVHc+PNfvf8kILU92B3sE/7GefPHL2VnlziFjdI92455Jp+paIGovamYW3Apjd0ea0OQK4027eMit63zR19L0CDYTnQvSi2rQzt+AVz+Gv6wOjReMh/UPfqBwJNFe4Hg+brb76SEiDDpwH38t5BKSIlyExPJeOSxg6/zHExIxYRep410wIXLbazwQHwJo4SOz13exiipqmbn5IZyGi+95N5QuyGfqyijvl6uFDUEELXVrceqAg9uzv8kR+WURiLlrFOkxbvuyiOQELyUCqqzDVcNe9NxGtof4zEJnVPQFvwOwaNYeX95fpUGHs7+PiMvlptHZ3hLimO7LFmJE4TB/+hkoEB9gw9Lq882Zxxjmx+MrzIRPhiiyN9VhV45ESlimtNgy2Gcy4BVFDSqOVm/7gDOcKGTkxXz+vhIbZMEdxKpYf3XRx6uPDu8CYYDZr078hMEjILJ6gsX7yx5Emy3GfBq3GlBPMTlQ/0pY9xWoqkUOu+FZOekrDr5SPcrV0SIlkBe6mxDZFT0WrzdDu6gXDu8gA9zxwzlFJf3sLpnrV5J+ng679+pBDywwrhT/N+T3TN6Je4Im2RvK7GjAc2ENv7X3F2Ay/GKej1BMiEEB2HYVu10/fi7Rv6Abs0p501KO5JVMoHdiNRUOhUqrkRtuekw6XL5XiRmAhSqOQpJ0TU8L/SFEfEpxJ9mdefux5ijnziP8MMrfQlMFx0V1M0+tpZi7C1QKJFZew+odWynhKNchOpKZDmKNHuwx9PSl5pfDulYt4OLoNH4HE+nSOh8xTM+8tUi+OyrCwlA8FuGTswOZ+RW0mQWoYUtdMYkTzOq75IMYxLgTfp5bHTTMTaDdWke1DTr4t230oOiqS+G+/EQf5fplS98EjStyDaYZBWXLzgrzViBZHYUUXmoEqHWEJ00BF86x8WmiYG9aZvPb0ASHrPcAtLsUMpxeu/rEW6FFnmNy6F3Alen51Aq3U8cDxLEt4cLYfAP1RZTTdt3WcEytqpC1KnPLSupNf9L9TmBlaCwBKJB/S5j960X+ENV4GGHX1uk7ai5qBoHfTDy7WDeVgJ5TNWyZS1TtPiL+e2SB9iRjoyQ4NuqLY2kUvZ745OuLxJP+LHVX6pNiebEfnP6nCVvH/k/4YCIVCR1/wzWAPdCc1PTi2KXART9qIHNrUeFZYWGTurvBkpYYow5IMM2HaLPmfV1QohaGMHWgJtK5gXOLaAxoUsV9P0EDuSL0TKtnJ46kPidqYh7XNul7NnnCQHbAzwZ2gYP29W/gU9Kejhkzj4y45wsEIs0j5gZy0pAVd3siEewiReMclUBZE2lnmyFBu/SUGGRJwc8BGlOK+KxS9UofebypGS6VTBI1BwHhWU5CkvovfamAOMiczePLHKV4VXyU7lsTDgucG06ddt/qdziKownZt5WFizydat70Ti01WazsvOT7c7FU1PNA2USr6bauE1/gQtKdalrpWuDPCAYn2zVZWWHP93YCeFleZxscg/L4vUNS56RFDngTEv98byR/+dummEyLRGu4fGG2Z22SYGqo14ept6LWBXG60zJbcubko9VeCqkUoRxaqDfV0LVQaHUnBB4HfmhGmp2IHm+759nX/U0TK5Cr6kGZk8HVQn9v9s2xpmuTLrCyiB+dRvyIB2UyhHs2NILJA1sfOj2ZuWOt+xD+pWutAo0PUMHf6QaAU9rEJH5as8Pvy0ZNkD6IjoijqLSuncewZVajCf0i0Q7dcwmTpXy1xgjcOkBKFWmUVbcqJG4FXge+mquLmYxGNky+b4hBmlJM95ad4fX8UITyNGo71rPPBOEqY4wUCyWT9ldFubXwO0UIvV/+EojkaVmTa0aViJ6ffNBZUtJC6vJcGcowHP1385He9hoJR7eHqy5HbRAp8HHst4rhsyZh5DyvUZ+5VaPgxRodZw2dAxQx0ho/FIJB7wU/UrAwR90Ajsft5fCYW8HanA8dc9jqAybrXkREg4AhYvsakIG3ezXhJo//5f8VYxpyUQfiIOdySt2xOJ+KNfmYOC52ra/MSZQG6y0RmogDkWjpUIzMygHqNI4g9kfszuARCME5PaiHzc4VrETiv5Dkox+AZwsBSV1UaPQhPIdkEAO0WirFs2/RyzwiIsGt2OODz2Y8xHwq9A0x+f3OZFk7PAdr8Oc3MV7RSX/3ZHUDm/7Cf5zteobdY00u9qThJ9vizNo3zp4Oilgl30FR12GjUMgNAWqFqFNg5x5tMct4EebIIdTrpyYkYpp6cEyIk6H6h7+a+A/RTiNAMHlq4ITXozXSbs0BozEg7MbJjqsQGmXHn4TtJ5c9SmptwWIYYpAbJ+2elahhio73y1uhLTjDr6NmpVxR2TPPdsa9qOgp1s5fj+kRssr4R8Cyu6M2hJxcZAh5ekirZYntlD+7I9tT2KroGRUn1g9/cqTgQgKj69tDoEaD1ZInfGYH5d7Z2F3ktGUuU7aculTANfvRYrXpDU345lRSrFI3GtdVmif8hFgavOjk/cO2fOAiITMx9qlD1DFy4TPq/BYdpnmlI04m+FtJZjR7SZoAXBZfWotZEyB2sS217n5JgeGIdhc9Wj//+LIVOA0WooiKOM12Dwnp6h6iUTdA+ta3N8o56Hb/Z2zuHrFedgVshB8F5jyYHFOmJ8FcJ7xapvVCyx2FtsjH6PR972P3es6uUQ3V4txxe2+/EbGln505I+VivgTbnrHRogTYWB6It+X4jo7zTAtY79akWbJ97sRqZXC7y5mrDp+KhEKQ7wWqGUA11SahMe5fAZzcJHrwTFa05bvMB5PtNYY4iM2r2nrgH8JhbF9BcUx1W9TcAzbWgvVbNWbAROnDiXg203BiobNnTlltYZXvU7CKY/dd9AlyQ2AEFQf9ssgmvYXGKhyTQHLtiJ+6jyW9DDNS9xdszaVU6vASBTG5+UrpsB9znrTaAxg2bckc3ICWKcQAzIg==","iter":310000};
+    var G = {"salt":"EIT6gJCvJNLUwrG74z8OTw==","iv":"7I0q+QmIeiYnCQ20","ct":"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","iter":310000};
     var b64d = function(s){ return Uint8Array.from(atob(s), function(c){ return c.charCodeAt(0); }); };
     var overlay = document.getElementById('gate');
     var form = document.getElementById('gform');
